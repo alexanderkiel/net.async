@@ -5,3 +5,6 @@ pom.xml
 /target/
 .lein-*
 .lein-deps-sum
+/.idea
+/*.iml
+/.nrepl-port
