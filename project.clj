@@ -5,9 +5,9 @@
             :distribution :repo
             :comments "same as Clojure"}
   :dependencies [
-    [org.clojure/clojure "1.5.1"]
+    [org.clojure/clojure "1.6.0"]
     [org.clojure/tools.logging "0.2.6"]
-    [org.clojure/core.async "0.1.242.0-44b1e3-alpha"]
+    [org.clojure/core.async "0.1.303.0-886421-alpha"]
   ]
   :profiles {
     :dev {
