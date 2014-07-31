@@ -1,4 +1,5 @@
 (ns net.async.test-tcp
+  (:import [java.nio.channels SelectionKey])
   (:require
     [clojure.tools.logging :as logging]
     [clojure.core.async :refer [>!! <!! chan close! go <! >! thread timeout alts!!]]
@@ -6,6 +7,15 @@
   (:use
     clojure.test
     net.async.tcp))
+
+(deftest test-select-ops
+  (is (= SelectionKey/OP_ACCEPT (select-opts {:state :accepting})))
+  (is (= SelectionKey/OP_CONNECT (select-opts {:state :connecting})))
+  (is (= 0 (select-opts {:state :connected})))
+  (is (= SelectionKey/OP_READ (select-opts {:state :connected :read-bufs []})))
+  (is (= SelectionKey/OP_WRITE (select-opts {:state :connected :write-bufs []})))
+  (is (= (bit-or SelectionKey/OP_READ SelectionKey/OP_WRITE)
+         (select-opts {:state :connected :read-bufs [] :write-bufs []}))))
 
 (defn write-str [socket ^String s]
   (>!! (:write-chan socket) (.getBytes s)))

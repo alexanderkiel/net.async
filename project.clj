@@ -11,8 +11,9 @@
   ]
   :profiles {
     :dev {
-      :global-vars   { *warn-on-reflection* true }
+      :source-paths ["dev"]
       :resource-dirs ["logs"]
+      :dependencies [[criterium "0.4.3"]]
       :jvm-opts [
         "-Djava.util.logging.config.file=logs/logging.properties"
       ]
