@@ -51,9 +51,12 @@
               (swap! socket-ref assoc :read-bufs (buf-array size-buf (buf size))))))
       2 (do
           (swap! socket-ref dissoc :read-bufs)
-          (logging/trace "Done reading on socket" (:id @socket-ref))
+          (logging/trace "Done reading on socket" (:id @socket-ref)
+                         "Park until payload is taken from read-chan.")
           (go
             (>! read-chan (nio/array body-buf))
+            (logging/trace "Done putting payload into read-chan."
+                           "Ready to read from socket again.")
             (nio/rewind! size-buf)
             (swap! socket-ref assoc :read-bufs (buf-array size-buf)))))))
 
