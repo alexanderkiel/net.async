@@ -2,7 +2,7 @@
   (:require
     [clojure.set :as set]
     [clojure.string :as string]
-    [clojure.tools.logging :as logging]
+    [clojure.tools.logging :as logging :refer (trace debug)]
     [clojure.core.async :as async :refer [>!! <!! chan close! go <! >! thread timeout alts!]]
     [net.async.nio :as nio])
   (:import
@@ -47,16 +47,16 @@
           (if (zero? size)
             (nio/rewind! size-buf) ;; heartbeat
             (do
-              (logging/trace "Allocate read body buffer of size" size)
+              (trace "Allocate read body buffer of size" size)
               (swap! socket-ref assoc :read-bufs (buf-array size-buf (buf size))))))
       2 (do
           (swap! socket-ref dissoc :read-bufs)
-          (logging/trace "Done reading on socket" (:id @socket-ref)
-                         "Park until payload is taken from read-chan.")
+          (trace "Done reading on socket" (:id @socket-ref)
+                 "Park until payload is taken from read-chan.")
           (go
             (>! read-chan (nio/array body-buf))
-            (logging/trace "Done putting payload into read-chan."
-                           "Ready to read from socket again.")
+            (trace "Done putting payload into read-chan."
+                   "Ready to read from socket.")
             (nio/rewind! size-buf)
             (swap! socket-ref assoc :read-bufs (buf-array size-buf)))))))
 
@@ -75,14 +75,16 @@
         (condp = port
           write-chan
           (if val
-            (swap! socket-ref assoc :write-bufs (write-bufs! size-buf val))
+            (do (trace "Done taking payload from write-chan."
+                       "Ready to write to socket.")
+                (swap! socket-ref assoc :write-bufs (write-bufs! size-buf val)))
             (swap! socket-ref assoc :state :closed))
 
           timeout
           (swap! socket-ref assoc :write-bufs (write-bufs! size-buf [])))))))
 
 (defn on-write-done [socket-ref]
-  (logging/trace "Done writing on socket" (:id @socket-ref))
+  (trace "Done writing on socket" (:id @socket-ref))
   (let [[size-buf] (:write-bufs @socket-ref)]
     (nio/rewind! size-buf)
     (swap! socket-ref dissoc :write-bufs)
@@ -90,8 +92,8 @@
 
 (defn alloc-size-buf [socket]
   (let [buf ((:size-buf-alloc-fn socket))]
-    (logging/trace "Allocated size buffer of size" (nio/capacity buf)
-                   "and order" (nio/order buf))
+    (trace "Allocated size buffer of size" (nio/capacity buf)
+           "and order" (nio/order buf))
     buf))
 
 (defn new-socket [opts]
@@ -127,7 +129,7 @@
                  :write-chan ((:write-chan-fn @socket-ref)) }
                (select-keys @socket-ref [:heartbeat-period :heartbeat-timeout]))
         new-socket-ref (new-socket opts)]
-    (logging/debug "Accepted new socket" (:id @new-socket-ref))
+    (debug "Accepted new socket" (:id @new-socket-ref))
     (on-connected new-socket-ref)
     (go
       (>! (:accept-chan @socket-ref) (client-socket new-socket-ref))
@@ -135,17 +137,22 @@
     new-socket-ref))
 
 (defn on-conn-dropped [socket-ref]
-  (let [{:keys [addr read-chan write-bufs reconnect-period]} @socket-ref]
+  (let [{:keys [id addr read-chan write-bufs reconnect-period]} @socket-ref]
+    (debug "Connection to" (str addr) "in" id "dropped.")
     (swap! socket-ref dissoc :read-bufs)
-    (doseq [buf write-bufs] (nio/rewind! buf))
+    (when write-bufs
+      (trace "Rewind write-bufs to resend.")
+      (doseq [buf write-bufs] (nio/rewind! buf)))
     (if addr
       (do
         (swap! socket-ref assoc :state :disconnected)
         (go
+          (trace "Park until" :disconnected "command is taken from read-chan.")
           (>! read-chan :disconnected)
+          (trace "Park for reconnect-period of" reconnect-period "ms")
           (<! (timeout reconnect-period))
-          (swap! socket-ref assoc
-                 :state :connecting)))
+          (trace "Go into" :connecting "state")
+          (swap! socket-ref assoc :state :connecting)))
       (swap! socket-ref assoc :state :closed))))
 
 (defn on-conn-closed [socket-ref]
@@ -186,7 +193,7 @@
     (try
       (nio/close! net-chan)
       (catch IOException e
-        (logging/debug "Error while closing network channel" (:id socket)
+        (debug "Error while closing network channel" (:id socket)
                        (.getMessage e))))))
   (swap! socket-ref dissoc :net-chan))
 
@@ -194,7 +201,7 @@
   (doseq [socket-ref @sockets
           :let [{:keys [state net-chan addr id]} @socket-ref]
           :when (and (= :connecting state) (nil? net-chan))]
-    (logging/debug "Connecting socket" id)
+    (debug "Connecting socket" id)
     (let [net-chan (doto (SocketChannel/open) (.configureBlocking false))]
       (swap! socket-ref assoc :net-chan net-chan)
       (.connect net-chan addr))))
@@ -203,7 +210,7 @@
   (doseq [socket-ref @sockets
           :let [{:keys [state id]} @socket-ref]
           :when (= state :closed)]
-    (logging/debug "Deleting socket" id)
+    (debug "Deleting socket" id)
     (swap! sockets disj socket-ref)
     (close-net-chan! socket-ref)
     (on-conn-closed socket-ref)))
@@ -215,7 +222,7 @@
                heartbeat-timeout
                (= state :connected)
                (< (+ @last-read heartbeat-timeout) (now)))
-      (logging/debug "Socket stuck" id)
+      (debug "Socket stuck" id)
       (close-net-chan! socket-ref)
       (on-conn-dropped socket-ref))))
 
@@ -237,11 +244,14 @@
     (detect-dead! sockets)
     (register-net-chans! selector sockets)
 
+    (trace "Select...")
     (nio/select! selector 1000)
 
     (doseq [key (nio/selected-keys selector)
             :let [socket-ref (nio/attachment key)
                   {:keys [net-chan read-bufs write-bufs last-read id addr]} @socket-ref]]
+
+      (trace "Do something on" id)
       (try
         (when (and (nio/readable? key) net-chan read-bufs)
           (let [read (nio/read! net-chan read-bufs 0 (count read-bufs))]
@@ -258,7 +268,7 @@
 
         (when (and (nio/connectable? key) net-chan)
           (nio/finish-connect! net-chan)
-          (logging/debug "Connected to" (str addr) "in" id)
+          (debug "Connected to" (str addr) "in" id)
           (on-connected socket-ref))
 
         (when (nio/acceptable? key)
